@@ -1,0 +1,101 @@
+def secrets = [
+    [path: 'kv/SERVICE', engineVersion: 2,
+        secretValues: [
+            [envVar: 'GITHUB', vaultKey: 'SVC_GITHUB'],
+            [envVar: 'SNYK_TOKEN', vaultKey: 'SVC_SNYK'],
+            [envVar: 'SONARQUBE', vaultKey: 'SVC_SONARQUBE']
+        ]
+    ],
+]
+def configuration = [vaultUrl: 'https://vault.tpc.tesco.org/', vaultNamespace:"001lmsystemordering1",  engineVersion: 2, vaultCredentialId: 'svc-supplierorder-vault']
+
+pipeline {
+    agent {label 'supplier-order-jenkins'}
+    options {
+        disableConcurrentBuilds()
+    }
+    environment {
+        APP_NAME = "supplier-order"
+        sonarqubeScannerHome = "/opt/sonar-scanner-4.7.0.2747-linux"
+        PATH = "/appl/maven/apache-maven-3.8.7/bin:/opt/sonar-scanner-4.7.0.2747-linux/bin/:${env.PATH}"
+        PROJECT_NAME="trial-project"
+        PACKAGE_NAME="com.tesco.supplierorder.trial"
+    }
+
+    stages {
+        stage('Clean') {
+            steps {
+                sh "mvn clean -Dbuild.number=${BUILD_NUMBER}"
+            }
+        }
+        stage('Build') {
+            steps {
+                script{
+                    withVault([configuration: configuration, vaultSecrets: secrets]) {
+                        sh "mvn install -DskipTests -Dbuild.number=${BUILD_NUMBER}"
+                    }
+                }
+            }
+        }
+        stage('Test Coverage') {
+            steps {
+                sh "mvn jacoco:report -DskipTests -Dbuild.number=${BUILD_NUMBER}"
+            }
+        }
+        stage ('Snyk Scan') {
+            steps {
+                script {
+                    sh "mvn dependency:tree -DoutputType=dot --batch-mode --non-recursive --file='pom.xml'"
+                    withVault([configuration: configuration, vaultSecrets: secrets]) {
+                        sh '/appl/snyk-linux test --severity-threshold=critical --org=226_supplier-ordering-and-store-ordering --project-name=$PROJECT_NAME --skip-unresolved=true --maven-aggregate-project --json-file-output=dependencyVulns.json || true'
+                    }
+                }
+            }
+            post {
+                always {
+                    sh '/appl/snyk-to-html-linux -i dependencyVulns.json -o dependencyVulns.html'
+                    archiveArtifacts artifacts: 'dependencyVulns.json'
+                    archiveArtifacts artifacts: 'dependencyVulns.html'
+                }
+            }
+        }
+        stage('SonarQube Scan') {
+        	steps {
+        		script{
+        		    withVault([configuration: configuration, vaultSecrets: secrets]) {
+        			    withSonarQubeEnv('sonar-server') {
+        				    def sonarqubeScannerHome = tool name: 'sonar-scanner', type: 'hudson.plugins.sonar.SonarRunnerInstallation'
+        				    if(env.BRANCH_NAME.startsWith('PR')) {
+        				        sh '$sonarqubeScannerHome/bin/sonar-scanner -e -Dsonar.java.source=1.8 -Dsonar.dynamicAnalysis=reuseReports -Dsonar.jacoco.reportPaths=target/jacoco.exec -Dsonar.java.coveragePlugin=jacoco -Dsonar.tests=src/test/java -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml -Dsonar.sources=src/main/java -Dsonar.language=java -Dsonar.projectVersion=1.0 -Dsonar.java.binaries=target/classes -Dsonar.projectKey=$PACKAGE_NAME:$PROJECT_NAME -Dsonar.projectName=$PROJECT_NAME -Dsonar.host.url=https://sonarqube.ourtesco.com/ -Dsonar.login=$SONARQUBE -Dbuild.number=$BUILD_NUMBER -Dsonar.pullrequest.key=$CHANGE_ID -Dsonar.pullrequest.branch=$CHANGE_BRANCH -Dsonar.pullrequest.base=$CHANGE_TARGET'
+                            } else {
+        				        sh '$sonarqubeScannerHome/bin/sonar-scanner -e -Dsonar.java.source=1.8 -Dsonar.dynamicAnalysis=reuseReports -Dsonar.jacoco.reportPaths=target/jacoco.exec -Dsonar.java.coveragePlugin=jacoco -Dsonar.tests=src/test/java -Dsonar.coverage.jacoco.xmlReportPaths=target/site/jacoco/jacoco.xml -Dsonar.sources=src/main/java -Dsonar.language=java -Dsonar.projectVersion=1.0 -Dsonar.branch.name=$BRANCH_NAME -Dsonar.java.binaries=target/classes -Dsonar.projectKey=$PACKAGE_NAME:$PROJECT_NAME -Dsonar.projectName=$PROJECT_NAME -Dsonar.host.url=https://sonarqube.ourtesco.com/ -Dsonar.login=$SONARQUBE -Dbuild.number=$BUILD_NUMBER'
+        				    }
+        			    }
+        			}
+        		}
+                sleep(30)
+        	}
+        }
+        stage('Publish to dev nexus') {
+            when {
+                anyOf {
+                    expression{env.BRANCH_NAME != 'master' && !env.BRANCH_NAME.startsWith('PR')}
+                }
+            }
+            steps {
+                 sh "mvn deploy -DuseTestRepo=true -DskipTests -Dbuild.number=${BUILD_NUMBER}"
+            }
+        }
+
+        stage('Publish to Prod nexus') {
+            when {
+                anyOf {
+                    branch 'master'
+                }
+            }
+            steps {
+                 sh "mvn deploy -DskipTests -Dbuild.number=${BUILD_NUMBER}"
+            }
+        }
+    }
+}
