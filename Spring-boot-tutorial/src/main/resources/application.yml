@@ -1,0 +1,53 @@
+#In order to remove redundancy of using repetitive names in properties file, we can use yml
+#file instead. There are online tools available to convert properties to yml file.
+
+server:
+  port: 8024
+
+spring:
+  profiles:
+    active: prod
+---
+spring:
+  profiles: dev
+  datasource:
+    driverClassName: org.h2.Driver
+    password: password
+    url: jdbc:h2:mem:dcbapp-dev
+    username: vp
+  h2:
+    console:
+      enabled: true
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+
+#to include all endpoints for actuator
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+
+welcome:
+  message: Hello World Spring Boot (Dev)!!
+---
+spring:
+  profiles: prod
+  datasource:
+    driverClassName: org.h2.Driver
+    password: password
+    url: jdbc:h2:mem:dcbapp
+    username: vp
+  h2:
+    console:
+      enabled: true
+  jpa:
+    database-platform: org.hibernate.dialect.H2Dialect
+management:
+  endpoints:
+    web:
+      exposure:
+        include: "*"
+
+welcome:
+  message: Hello World Spring Boot (Prod)!!
